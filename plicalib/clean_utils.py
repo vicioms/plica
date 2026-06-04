@@ -4,6 +4,20 @@ from typing import Tuple, Optional, List
 import os
 import contextlib
 import warnings
+from plicalib.mesh_utils import compute_face_areas
+
+def remove_small_triangles(mesh, area_min):
+    V = np.asarray(mesh.vertices)
+    T = np.asarray(mesh.triangles)
+    areas = compute_face_areas(V, T)
+    remove_mask = areas < area_min
+
+    mesh.remove_triangles_by_mask(remove_mask)
+    mesh.remove_unreferenced_vertices()
+    mesh.remove_degenerate_triangles()
+    mesh.compute_vertex_normals()
+
+    return mesh
 
 
 @contextlib.contextmanager
