@@ -121,6 +121,7 @@ def load_mesh_base(
     flip0=False,
     flip1=False,
     flip2=False,
+    normalize=False,
 ):
     mesh = o3d.io.read_triangle_mesh(str(file))
 
@@ -158,6 +159,19 @@ def load_mesh_base(
 
     if scale != 1.0:
         mesh.scale(scale, center=(0, 0, 0))
+
+
+    if normalize:
+        vertices = np.asarray(mesh.vertices)
+        center = vertices.mean(axis=0)
+        vertices -= center
+
+        max_extent = np.ptp(vertices, axis=0).max()
+
+        if max_extent > 0:
+            vertices /= max_extent
+
+        mesh.vertices = o3d.utility.Vector3dVector(vertices)
 
     mesh.compute_vertex_normals()
 
@@ -286,6 +300,8 @@ def from_csv_database(
         flip1 = _to_bool(_get_first(row, ["flipy", "flip1"], False))
         flip2 = _to_bool(_get_first(row, ["flipz", "flip2"], False))
 
+        normalize = _to_bool(_get_first(row, ["normalize"], False))
+
         tags = {
             col: row[col]
             for col in tag_cols
@@ -305,6 +321,7 @@ def from_csv_database(
             "flip0": flip0,
             "flip1": flip1,
             "flip2": flip2,
+            "normalize": normalize,
         }
 
         kwargs |= database_params
@@ -455,6 +472,8 @@ def from_json_database(
         flip1 = _to_bool(_get_first(entry, ["flipy", "flip1"], False))
         flip2 = _to_bool(_get_first(entry, ["flipz", "flip2"], False))
 
+        normalize = _to_bool(_get_first(entry, ["normalize"], False))
+
         tags = {
             key: entry[key]
             for key in tag_keys
@@ -474,6 +493,7 @@ def from_json_database(
             "flip0": flip0,
             "flip1": flip1,
             "flip2": flip2,
+            "normalize": normalize,
         }
 
         kwargs |= database_params

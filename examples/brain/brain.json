@@ -1,0 +1,17 @@
+{
+    "brain_left_wk34":
+                {
+                    "path" : "Human_left_wk34_real.ply",
+                    "standardize" : true
+                },
+    "brain_right_wk34":
+                {
+                    "path" : "Human_right_wk34_real.ply",
+                    "standardize" : true
+                },
+    "brain_whole_wk23":
+                {
+                    "path" : "Human_wk23_whole.ply",
+                    "standardize" : true
+                }
+}
