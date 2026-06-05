@@ -1,218 +1,170 @@
 {
     "20220517_ecadGFPnbG4_96hAEL_disc6": {
         "path": "20220517_ecadGFPnbG4_96hAEL_disc6.ply",
-        "invert_axis": [
-            true,
-            false,
-            false
-        ],
+        "flip0": true,
+        "flip1": false,
+        "flip2": false,
         "scale": 0.4682
     },
     "20210125_ecadGFPnbG4_upcrawling_disc2": {
         "path": "20210125_ecadGFPnbG4_upcrawling_disc2.ply",
-        "invert_axis": [
-            true,
-            false,
-            false
-        ],
+        "flip0": true,
+        "flip1": false,
+        "flip2": false,
         "scale": 0.457
     },
     "20240219_ecadGFPnbG4_74hAEL_disc3": {
         "path": "20240219_ecadGFPnbG4_74hAEL_disc3.ply",
-        "invert_axis": [
-            false,
-            false,
-            false
-        ],
+        "flip0": false,
+        "flip1": false,
+        "flip2": false,
         "scale": 0.4669
     },
     "20220517_ecadGFPnbG4_96hAEL_disc2": {
         "path": "20220517_ecadGFPnbG4_96hAEL_disc2.ply",
-        "invert_axis": [
-            true,
-            false,
-            false
-        ],
+        "flip0": true,
+        "flip1": false,
+        "flip2": false,
         "scale": 0.4663
     },
     "20231127_fm464ecadGFP_wL3_disc1channel2": {
         "path": "20231127_fm464ecadGFP_wL3_disc1channel2.ply",
-        "invert_axis": [
-            false,
-            false,
-            false
-        ],
+        "flip0": false,
+        "flip1": false,
+        "flip2": false,
         "scale": 0.4653
     },
     "20201022_ecadGFPnbG4_2hAPF_disc1": {
         "path": "20201022_ecadGFPnbG4_2hAPF_disc1.ply",
-        "invert_axis": [
-            false,
-            false,
-            false
-        ],
+        "flip0": false,
+        "flip1": false,
+        "flip2": false,
         "scale": 0.4572
     },
     "20201029_ecadGFPnbG4_4hAPF_disc3": {
         "path": "20201029_ecadGFPnbG4_4hAPF_disc3.ply",
-        "invert_axis": [
-            true,
-            false,
-            false
-        ],
+        "flip0": true,
+        "flip1": false,
+        "flip2": false,
         "scale": 0.4566
     },
     "20201029_ecadGFPnbG4_whitepupa_disc5": {
         "path": "20201029_ecadGFPnbG4_whitepupa_disc5.ply",
-        "invert_axis": [
-            true,
-            false,
-            false
-        ],
+        "flip0": true,
+        "flip1": false,
+        "flip2": false,
         "scale": 0.457
     },
     "20220517_ecadGFPnbG4_120hAEL_disc5": {
         "path": "20220517_ecadGFPnbG4_120hAEL_disc5.ply",
-        "invert_axis": [
-            true,
-            false,
-            false
-        ],
+        "flip0": true,
+        "flip1": false,
+        "flip2": false,
         "scale": 0.4691
     },
     "20201022_ecadGFPnbG4_2hAPF_disc2": {
         "path": "20201022_ecadGFPnbG4_2hAPF_disc2.ply",
-        "invert_axis": [
-            true,
-            false,
-            false
-        ],
+        "flip0": true,
+        "flip1": false,
+        "flip2": false,
         "scale": 0.4563
     },
     "20220517_ecadGFPnbG4_120hAEL_disc2": {
         "path": "20220517_ecadGFPnbG4_120hAEL_disc2.ply",
-        "invert_axis": [
-            false,
-            true,
-            false
-        ],
+        "flip0": false,
+        "flip1": true,
+        "flip2": false,
         "scale": 0.4575
     },
     "20210706_ecadGFPnbG4_upcrawling_disc1": {
         "path": "20210706_ecadGFPnbG4_upcrawling_disc1.ply",
-        "invert_axis": [
-            true,
-            false,
-            false
-        ],
+        "flip0": true,
+        "flip1": false,
+        "flip2": false,
         "scale": 0.4569
     },
     "20240219_ecadGFPnbG4_74hAEL_disc4": {
         "path": "20240219_ecadGFPnbG4_74hAEL_disc4.ply",
-        "invert_axis": [
-            false,
-            false,
-            false
-        ],
+        "flip0": false,
+        "flip1": false,
+        "flip2": false,
         "scale": 0.4692
     },
     "20220517_ecadGFPnbG4_96hAEL_disc1": {
         "path": "20220517_ecadGFPnbG4_96hAEL_disc1.ply",
-        "invert_axis": [
-            true,
-            false,
-            false
-        ],
+        "flip0": true,
+        "flip1": false,
+        "flip2": false,
         "scale": 0.4671
     },
     "20210706_ecadGFPnbG4_upcrawling_disc3": {
         "path": "20210706_ecadGFPnbG4_upcrawling_disc3.ply",
-        "invert_axis": [
-            false,
-            false,
-            false
-        ],
+        "flip0": false,
+        "flip1": false,
+        "flip2": false,
         "scale": 0.4582
     },
     "20201022_ecadGFPnbG4_2hAPF_disc4": {
         "path": "20201022_ecadGFPnbG4_2hAPF_disc4.ply",
-        "invert_axis": [
-            false,
-            false,
-            false
-        ],
+        "flip0": false,
+        "flip1": false,
+        "flip2": false,
         "scale": 0.4574
     },
     "20201022_ecadGFPnbG4_4hAPF_disc2": {
         "path": "20201022_ecadGFPnbG4_4hAPF_disc2.ply",
-        "invert_axis": [
-            true,
-            false,
-            false
-        ],
+        "flip0": true,
+        "flip1": false,
+        "flip2": false,
         "scale": 0.4587
     },
     "20210818_ecadGFPnbG4_96hAEL_disc4": {
         "path": "20210818_ecadGFPnbG4_96hAEL_disc4.ply",
-        "invert_axis": [
-            false,
-            false,
-            false
-        ],
+        "flip0": false,
+        "flip1": false,
+        "flip2": false,
         "scale": 0.4551
     },
     "20201022_ecadGFPnbG4_whitepupa_disc2": {
         "path": "20201022_ecadGFPnbG4_whitepupa_disc2.ply",
-        "invert_axis": [
-            true,
-            false,
-            false
-        ],
+        "flip0": true,
+        "flip1": false,
+        "flip2": false,
         "scale": 0.4556
     },
     "20240219_ecadGFPnbG4_74hAEL_disc2": {
         "path": "20240219_ecadGFPnbG4_74hAEL_disc2.ply",
-        "invert_axis": [
-            false,
-            false,
-            false
-        ],
+        "flip0": false,
+        "flip1": false,
+        "flip2": false,
         "scale": 0.466
     },
     "20240219_ecadGFPnbG4_74hAEL_disc1": {
         "path": "20240219_ecadGFPnbG4_74hAEL_disc1.ply",
-        "invert_axis": [
-            false,
-            false,
-            false
-        ],
+        "flip0": false,
+        "flip1": false,
+        "flip2": false,
         "scale": 0.4637
     },
     "20220517_ecadGFPnbG4_120hAEL_disc3": {
         "path": "20220517_ecadGFPnbG4_120hAEL_disc3.ply",
-        "invert_axis": [
-            true,
-            true,
-            false
-        ],
+        "flip0": true,
+        "flip1": true,
+        "flip2": false,
         "scale": 0.4557
     },
     "20201029_ecadGFPnbG4_whitepupa_disc3": {
         "path": "20201029_ecadGFPnbG4_whitepupa_disc3.ply",
-        "invert_axis": [
-            true,
-            false,
-            false
-        ],
+        "flip0": true,
+        "flip1": false,
+        "flip2": false,
         "scale": 0.4579
     },
     "20201029_ecadGFPnbG4_4hAPF_disc1": {
         "path": "20201029_ecadGFPnbG4_4hAPF_disc1.ply",
-        "invert_axis": [
-            true,
-            false,
-            false
-        ],
+        "flip0": true,
+        "flip1": false,
+        "flip2": false,
         "scale": 0.4574
     }
 }
