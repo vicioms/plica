@@ -3,8 +3,8 @@ from scipy.spatial import ConvexHull, KDTree
 from typing import Dict, Optional, Tuple, Union
 from numpy.typing import NDArray, ArrayLike
 import scipy.sparse as sparse
+from scipy.sparse.csgraph import connected_components
 from scipy.interpolate import NearestNDInterpolator
-import networkx as nx
 
 def get_edgelist(faces : NDArray) -> NDArray:
     return np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]], axis=0)
@@ -325,78 +325,136 @@ def compute_voronoi_mass(
     return mass
 
 def _plane_slice_edge_crosses(si, sj, epsilon=0):
-    # treat zero as positive (consistent tiebreak)
-    si = np.where(np.abs(si) <= epsilon, epsilon, si)
-    sj = np.where(np.abs(sj) <= epsilon, epsilon, sj)
+    """
+    Return True where an edge crosses the slicing plane.
+
+    Vertices exactly on the plane are treated as positive-side vertices,
+    with a small numerical floor when epsilon <= 0.
+    """
+    eps = max(float(epsilon), 1e-12)
+    si = np.where(np.abs(si) <= eps, eps, si)
+    sj = np.where(np.abs(sj) <= eps, eps, sj)
     return (si > 0) != (sj > 0)
-def plane_slice(vertices : NDArray, faces : NDArray, plane_origin : NDArray, plane_normal : NDArray, epsilon=0, return_edge_indices=False) -> Tuple[NDArray, NDArray, Optional[NDArray]]:
+def plane_slice(
+    vertices: NDArray,
+    faces: NDArray,
+    plane_origin: NDArray,
+    plane_normal: NDArray,
+    epsilon=0,
+    return_crossed_edges=False,
+) -> Tuple[NDArray, NDArray, Optional[NDArray]]:
     '''
-        Slice a triangular mesh with a plane defined by `plane_origin` and `plane_normal`.
+    Slice a triangular mesh with a plane defined by `plane_origin` and `plane_normal`.
 
-        Parameters
-        ----------
-        vertices : array, shape (N, 3)
-            Vertex coordinates of the mesh.
+    Parameters
+    ----------
+    vertices : array, shape (N, 3)
+        Vertex coordinates of the mesh.
 
-        faces : array, shape (M, 3)
-            Indices of vertices forming triangular faces.
+    faces : array, shape (M, 3)
+        Indices of vertices forming triangular faces.
 
-        plane_origin : array, shape (3,)
-            A point on the slicing plane.
+    plane_origin : array, shape (3,)
+        A point on the slicing plane.
 
-        plane_normal : array, shape (3,)
-            Normal vector of the slicing plane.
+    plane_normal : array, shape (3,)
+        Normal vector of the slicing plane.
 
-        epsilon : float
-            Numerical stability threshold for determining if a vertex is on the plane.
+    epsilon : float
+        Numerical stability threshold for determining if a vertex is on the plane.
 
+    return_crossed_edges : bool
+        If True, also return crossed_edge_vertices with shape (K, 2, 2).
+        For segment k and endpoint a, crossed_edge_vertices[k, a] contains
+        the two original vertex ids of the mesh edge that generated that endpoint.
 
-        Returns        -------
-        segments : array, shape (K, 2, 3)
-            Line segments representing the intersection of the mesh with the plane.
+    Returns
+    -------
+    segments : array, shape (K, 2, 3)
+        Line segments representing the intersection of the mesh with the plane.
 
-        triangle_indices : array, shape (K,)
-            Indices of the triangles that were sliced to produce each segment.
+    triangle_indices : array, shape (K,)
+        Indices of the triangles that were sliced to produce each segment.
 
-        edge_indices : array, shape (K, 2) (optional)
-            Indices of the edges of the original triangles that correspond to each segment.
+    crossed_edge_vertices : array, shape (K, 2, 2), optional
+        Crossed mesh edges represented by their endpoint vertex ids.
     '''
+    vertices = np.asarray(vertices)
+    faces = np.asarray(faces, dtype=np.int64)
+    plane_origin = np.asarray(plane_origin, dtype=vertices.dtype)
+    plane_normal = np.asarray(plane_normal, dtype=vertices.dtype)
+
     signed_distances = (vertices - plane_origin) @ plane_normal
+
     i0, i1, i2 = faces[:, 0], faces[:, 1], faces[:, 2]
     s0, s1, s2 = signed_distances[i0], signed_distances[i1], signed_distances[i2]
 
     c01_crosses = _plane_slice_edge_crosses(s0, s1, epsilon)
     c12_crosses = _plane_slice_edge_crosses(s1, s2, epsilon)
     c20_crosses = _plane_slice_edge_crosses(s2, s0, epsilon)
-    den01 = (s0-s1)
-    den12 = (s1-s2)
-    den20 = (s2-s0)
 
-    t01 = np.full( s0.shape, np.nan)
-    t12 = np.full( s0.shape, np.nan)
-    t20 = np.full( s0.shape, np.nan)
+    den01 = s0 - s1
+    den12 = s1 - s2
+    den20 = s2 - s0
+
+    t01 = np.full(s0.shape, np.nan, dtype=vertices.dtype)
+    t12 = np.full(s0.shape, np.nan, dtype=vertices.dtype)
+    t20 = np.full(s0.shape, np.nan, dtype=vertices.dtype)
 
     t01[c01_crosses] = s0[c01_crosses] / den01[c01_crosses]
     t12[c12_crosses] = s1[c12_crosses] / den12[c12_crosses]
     t20[c20_crosses] = s2[c20_crosses] / den20[c20_crosses]
 
     v0, v1, v2 = vertices[i0], vertices[i1], vertices[i2]
+
     p01 = v0 + (v1 - v0) * t01[:, None]
     p12 = v1 + (v2 - v1) * t12[:, None]
     p20 = v2 + (v0 - v2) * t20[:, None]
-    P = np.stack([p01,p12,p20], axis=1)
+
+    P = np.stack([p01, p12, p20], axis=1)
     M = np.stack([c01_crosses, c12_crosses, c20_crosses], axis=1)
+
     good_triangles = np.sum(M, axis=1) == 2
+    triangle_indices = np.flatnonzero(good_triangles)
+
     P_good = P[good_triangles]
     M_good = M[good_triangles]
-    segments = P_good[M_good].reshape(-1,2,3)
-    if return_edge_indices:
-        E = np.stack([faces[:,[0,1]], faces[:,[1,2]], faces[:,[2,0]]], axis=1)
+
+    segments = P_good[M_good].reshape(-1, 2, 3)
+
+    if return_crossed_edges:
+        # E[f, e] is the original vertex pair of local edge e of face f.
+        # The local edge order matches P/M:
+        #   edge 0 -> (faces[:, 0], faces[:, 1])
+        #   edge 1 -> (faces[:, 1], faces[:, 2])
+        #   edge 2 -> (faces[:, 2], faces[:, 0])
+        E = np.stack(
+            [
+                faces[:, [0, 1]],
+                faces[:, [1, 2]],
+                faces[:, [2, 0]],
+            ],
+            axis=1,
+        )
+
         E_good = E[good_triangles]
-        return segments, np.argwhere(good_triangles).flatten(), E_good[M_good].reshape(-1,2)
-    else:
-        return segments, np.argwhere(good_triangles).flatten()
-def plane_slice_single_normal(vertices : NDArray, triangles : NDArray, plane_origins : NDArray, plane_normal : NDArray, epsilon=0, return_edge_indices=False, return_as_dict=False):
+
+        # Since each good triangle has exactly two crossed edges,
+        # this has shape (num_segments, 2 endpoints, 2 vertex ids per mesh edge).
+        crossed_edge_vertices = E_good[M_good].reshape(-1, 2, 2)
+
+        return segments, triangle_indices, crossed_edge_vertices
+
+    return segments, triangle_indices
+def plane_slice_single_normal(
+    vertices: NDArray,
+    triangles: NDArray,
+    plane_origins: NDArray,
+    plane_normal: NDArray,
+    epsilon=0,
+    return_crossed_edges=False,
+    return_as_dict=False,
+):
     v_dot_n = vertices @ plane_normal                     # (num_vertices,)
     o_dot_n = plane_origins @ plane_normal               # (num_planes,)
 
@@ -426,37 +484,34 @@ def plane_slice_single_normal(vertices : NDArray, triangles : NDArray, plane_ori
     t12[c12_crosses] = s1[c12_crosses] / den12[c12_crosses]
     t20[c20_crosses] = s2[c20_crosses] / den20[c20_crosses]
 
-    v0, v1, v2 = vertices[i0], vertices[i1], vertices[i2]   # (num_triangles, 3)
+    v0, v1, v2 = vertices[i0], vertices[i1], vertices[i2]
 
-    # (num_planes, num_triangles, 3)
     p01 = v0[None, :, :] + (v1 - v0)[None, :, :] * t01[:, :, None]
     p12 = v1[None, :, :] + (v2 - v1)[None, :, :] * t12[:, :, None]
     p20 = v2[None, :, :] + (v0 - v2)[None, :, :] * t20[:, :, None]
 
-    # candidate points and masks
-    # P: (num_planes, num_triangles, 3_edges, 3_xyz)
-    # M: (num_planes, num_triangles, 3_edges)
     P = np.stack([p01, p12, p20], axis=2)
     M = np.stack([c01_crosses, c12_crosses, c20_crosses], axis=2)
-    # triangles cut in exactly two edges
-    good = np.sum(M, axis=2) == 2                        # (num_planes, num_triangles)
-    # indices of (plane, triangle) that produce one segment
+
+    good = np.sum(M, axis=2) == 2
     plane_ids, tri_ids = np.nonzero(good)
-    # select only good plane-triangle pairs
-    P_good = P[good]                                     # (num_good, 3_edges, 3_xyz)
-    M_good = M[good]                                     # (num_good, 3_edges)
-    # pick the 2 valid points / edges for each good pair
-    segments = P_good[M_good].reshape(-1, 2, 3)          # (num_good, 2, 3)
 
-    if return_edge_indices:
-        # edge vertex ids: (num_triangles, 3_edges, 2)
+    P_good = P[good]
+    M_good = M[good]
+
+    segments = P_good[M_good].reshape(-1, 2, 3)
+
+    if return_crossed_edges:
         E = np.stack(
-            [triangles[:, [0, 1]], triangles[:, [1, 2]], triangles[:, [2, 0]]],
-            axis=1
+            [
+                triangles[:, [0, 1]],
+                triangles[:, [1, 2]],
+                triangles[:, [2, 0]],
+            ],
+            axis=1,
         )
-        E_good = E[tri_ids]                                  # (num_good, 3_edges, 2)
-        crossed_edges = E_good[M_good].reshape(-1, 2, 2)     # (num_good, 2, 2)
-
+        E_good = E[tri_ids]
+        crossed_edges = E_good[M_good].reshape(-1, 2, 2)
     else:
         crossed_edges = None
 
@@ -466,55 +521,224 @@ def plane_slice_single_normal(vertices : NDArray, triangles : NDArray, plane_ori
             plane_mask = plane_ids == plane_id
             results[plane_id] = {
                 'segments': segments[plane_mask],
-                'triangle_indices': tri_ids[plane_mask]
+                'triangle_indices': tri_ids[plane_mask],
             }
             if crossed_edges is not None:
                 results[plane_id]['crossed_edges'] = crossed_edges[plane_mask]
+        return results
+
+    if crossed_edges is not None:
+        return segments, plane_ids, tri_ids, crossed_edges
+
+    return segments, plane_ids, tri_ids
+def _order_path_from_csr(A: sparse.csr_matrix, close_loops: bool = True) -> NDArray:
+    """
+    Order nodes in a path-like sparse graph.
+
+    This assumes each connected component is either an open chain
+    or a simple closed loop. For branching/non-manifold components,
+    this returns one greedy walk through the component.
+    """
+    A = A.tocsr()
+    n = A.shape[0]
+
+    if n == 0:
+        return np.empty(0, dtype=np.int64)
+
+    if n == 1:
+        return np.array([0], dtype=np.int64)
+
+    deg = np.diff(A.indptr)
+    endpoints = np.flatnonzero(deg == 1)
+    is_closed = len(endpoints) == 0
+
+    if len(endpoints) > 0:
+        start = endpoints[0]
     else:
-        if crossed_edges is not None:
-            results = (segments, plane_ids, tri_ids, crossed_edges)
-        else:
-            results = (segments, plane_ids, tri_ids)
+        start = 0
 
-    return results
-def get_segment_path_from_faces_path(faces_adj_graph : nx.Graph, tri_indices : NDArray, tri_to_seg_index : Dict[int, int]):
-    sub = faces_adj_graph.subgraph(tri_indices)
-    deg = dict(sub.degree())
-    tris = list(tri_indices)
+    path = []
+    visited = np.zeros(n, dtype=bool)
 
-    # start from a degree-1 node (endpoint) if it exists, else any node
-    start = next((t for t in tris if deg[t] == 1), tris[0])
+    prev = -1
+    cur = int(start)
 
-    # greedy walk: always go to the unvisited neighbor
-    path = [start]
-    visited = {start}
-    current = start
     while True:
-        neighbors = [nb for nb in sub.neighbors(current) if nb not in visited]
-        if not neighbors:
+        path.append(cur)
+        visited[cur] = True
+
+        neighbors = A.indices[A.indptr[cur]:A.indptr[cur + 1]]
+        candidates = neighbors[(neighbors != prev) & (~visited[neighbors])]
+
+        if len(candidates) == 0:
             break
-        current = neighbors[0]  # only one unvisited neighbor if it's a path graph
-        visited.add(current)
-        path.append(current)
 
-    seg_indices = np.array([tri_to_seg_index[t] for t in path])
-    return path, seg_indices
-def plane_slice_paths(vertices, faces, plane_origin, plane_normal, faces_adj_graph : nx.Graph = None, epsilon=0):
-    segments, tri_indices = plane_slice(vertices, faces, plane_origin, plane_normal, epsilon)
-    if faces_adj_graph is None:
-        faces_adj_graph = nx.from_scipy_sparse_matrix(get_faces_adjacency_scipy(faces))
+        prev, cur = cur, int(candidates[0])
 
-    seg_index_of = {tri: i for i, tri in enumerate(tri_indices)}
-    segments_tri_subgraph = faces_adj_graph.subgraph(tri_indices).copy()
-    non_adjacent_segments_groups = list(nx.connected_components(segments_tri_subgraph))
+    path = np.asarray(path, dtype=np.int64)
+
+    if close_loops and is_closed and len(path) > 2:
+        path = np.concatenate([path, path[:1]])
+
+    return path
+def _segments_to_polylines_from_crossed_edges(
+    segments: NDArray,
+    crossed_edge_vertices: NDArray,
+    tri_indices: Optional[NDArray] = None,
+    close_loops: bool = True,
+):
+    """
+    Convert unordered mesh-plane intersection segments into ordered polylines.
+
+    Nodes of the graph are crossed original mesh edges, represented by
+    their sorted vertex pairs. Edges of the graph are slice segments.
+    This orders actual segment endpoints, not segment midpoints.
+    """
+    segments = np.asarray(segments)
+    crossed_edge_vertices = np.asarray(crossed_edge_vertices, dtype=np.int64)
+
+    n_segments = len(segments)
+    if n_segments == 0:
+        return [], []
+
+    # Endpoint labels: the original mesh edge on which each endpoint lies.
+    endpoint_edges = crossed_edge_vertices.reshape(-1, 2)
+    endpoint_edges = np.sort(endpoint_edges, axis=1)
+
+    # Endpoint coordinates in matching order.
+    endpoint_points = segments.reshape(-1, 3)
+
+    unique_edges, inv = np.unique(
+        endpoint_edges,
+        axis=0,
+        return_inverse=True,
+    )
+
+    n_nodes = len(unique_edges)
+    endpoint_node_ids = inv.reshape(n_segments, 2)
+
+    # There may be duplicate coordinates for the same crossed mesh edge
+    # from the two adjacent triangles. Average them for numerical robustness.
+    node_points = np.zeros((n_nodes, 3), dtype=segments.dtype)
+    node_counts = np.zeros(n_nodes, dtype=np.int64)
+
+    np.add.at(node_points, inv, endpoint_points)
+    np.add.at(node_counts, inv, 1)
+    node_points /= node_counts[:, None]
+
+    u = endpoint_node_ids[:, 0]
+    v = endpoint_node_ids[:, 1]
+
+    # Degenerate segments can happen when the plane exactly hits vertices/edges.
+    valid = u != v
+    valid_seg_ids = np.flatnonzero(valid)
+    u = u[valid]
+    v = v[valid]
+
+    if len(u) == 0:
+        return [], []
+
+    data = np.ones(2 * len(u), dtype=np.uint8)
+    A = sparse.coo_matrix(
+        (
+            data,
+            (
+                np.concatenate([u, v]),
+                np.concatenate([v, u]),
+            ),
+        ),
+        shape=(n_nodes, n_nodes),
+    ).tocsr()
+
+    A.data[:] = 1
+    A.eliminate_zeros()
+
+    # Map graph edge -> source slice segment(s).
+    # Multiple segments on same pair should only happen in degenerate/non-manifold cases.
+    edge_to_seg = {}
+    for seg_id in valid_seg_ids:
+        a, b = endpoint_node_ids[seg_id]
+        a, b = int(a), int(b)
+        if a > b:
+            a, b = b, a
+        edge_to_seg.setdefault((a, b), []).append(int(seg_id))
+
+    n_components, labels = connected_components(
+        A,
+        directed=False,
+        return_labels=True,
+    )
+
     paths = []
-    for group in non_adjacent_segments_groups:
-        tri_path, seg_indices = get_segment_path_from_faces_path(faces_adj_graph, group, seg_index_of)
-        if tri_path is None:
+    tri_paths = []
+
+    tri_indices_arr = None if tri_indices is None else np.asarray(tri_indices)
+
+    for c in range(n_components):
+        global_nodes = np.flatnonzero(labels == c)
+
+        if len(global_nodes) == 0:
             continue
-        ordered_points = (segments[seg_indices, 0] + segments[seg_indices, 1]) / 2
+
+        A_comp = A[global_nodes][:, global_nodes].tocsr()
+        local_order = _order_path_from_csr(A_comp, close_loops=close_loops)
+        ordered_nodes = global_nodes[local_order]
+
+        ordered_points = node_points[ordered_nodes]
+
+        ordered_seg_ids = []
+        for a, b in zip(ordered_nodes[:-1], ordered_nodes[1:]):
+            aa, bb = int(a), int(b)
+            if aa > bb:
+                aa, bb = bb, aa
+
+            candidates = edge_to_seg.get((aa, bb), [])
+            if len(candidates) > 0:
+                ordered_seg_ids.append(candidates[0])
+
+        ordered_seg_ids = np.asarray(ordered_seg_ids, dtype=np.int64)
+
         paths.append(ordered_points)
-    return paths
+
+        if tri_indices_arr is None:
+            tri_paths.append(None)
+        else:
+            tri_paths.append(tri_indices_arr[ordered_seg_ids])
+
+    return paths, tri_paths
+def plane_slice_paths(
+    vertices,
+    faces,
+    plane_origin,
+    plane_normal,
+    epsilon=0,
+    close_loops: bool = True,
+):
+    """
+    Slice mesh and return ordered intersection polylines.
+
+    Unlike the previous version, this returns actual ordered intersection
+    endpoints, not segment midpoints.
+
+    """
+    segments, tri_indices, crossed_edge_vertices = plane_slice(
+        vertices,
+        faces,
+        plane_origin,
+        plane_normal,
+        epsilon=epsilon,
+        return_crossed_edges=True,
+    )
+
+    paths, tri_paths = _segments_to_polylines_from_crossed_edges(
+        segments,
+        crossed_edge_vertices,
+        tri_indices=tri_indices,
+        close_loops=close_loops,
+    )
+
+    return paths, tri_paths
+
 
 def nn_interpolation(vertices: NDArray, values: NDArray, query_points: NDArray) -> NDArray:
     interpolator = NearestNDInterpolator(vertices, values)

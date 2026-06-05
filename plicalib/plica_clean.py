@@ -4,7 +4,7 @@ from typing import Tuple, Optional, List
 import os
 import contextlib
 import warnings
-from plicalib.mesh_utils import compute_face_areas
+from plicalib.plica_utils import compute_face_areas
 
 def remove_small_triangles(mesh, area_min):
     V = np.asarray(mesh.vertices)
