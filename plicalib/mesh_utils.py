@@ -1,80 +1,74 @@
 import numpy as np
 from scipy.spatial import ConvexHull, KDTree
-from typing import Optional, Tuple, Union
+from typing import Dict, Optional, Tuple, Union
 from numpy.typing import NDArray, ArrayLike
 import scipy.sparse as sparse
 from scipy.interpolate import NearestNDInterpolator
+import networkx as nx
 
-def nn_interpolation(vertices: NDArray, values: NDArray, query_points: NDArray) -> NDArray:
-    interpolator = NearestNDInterpolator(vertices, values)
-    return interpolator(query_points)
-def normals_misalignment_chull(points: NDArray, normals: NDArray, eps: float = 1e-12, return_dots: bool = False):
+def get_edgelist(faces : NDArray) -> NDArray:
+    return np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]], axis=0)
+def get_faces_adjacency_scipy(faces, return_edges=False):
     """
-    Compute the ratio of points whose normals are misaligned with the
-    direction from the convex-hull centroid to the point.
-
-    Parameters
-    ----------
-    points : array, shape (N, 3)
-        Point coordinates.
-
-    normals : array, shape (N, 3)
-        Normal vectors associated with each point.
-
-    eps : float
-        Numerical stability threshold.
-
-    return_dots : bool
-        If True, also return the dot products.
+    Vectorized sparse face adjacency.
 
     Returns
     -------
-    misaligned_ratio : float
-        Fraction of points with inward-pointing normals.
+    A : scipy.sparse.csr_matrix, shape (n_faces, n_faces)
+        A[f, g] = 1 if faces f and g share an edge.
 
-    dots : array, optional, shape (N,)
-        Dot products between outward radial directions and normals.
+    Optionally returns
+    -------
+    unique_edges : ndarray, shape (n_edges, 2)
+        The unique undirected mesh edges.
+    B : scipy.sparse.csr_matrix, shape (n_edges, n_faces)
+        Edge-face incidence matrix.
     """
-    points = np.asarray(points, dtype=float)
-    normals = np.asarray(normals, dtype=float)
+    faces = np.asarray(faces, dtype=np.int64)
+    n_faces = faces.shape[0]
 
-    if points.shape != normals.shape:
-        raise ValueError(
-            f"`points` and `normals` must have the same shape. "
-            f"Got {points.shape} and {normals.shape}."
-        )
+    # all triangle edges
+    edges = get_edgelist(faces)
 
-    if points.ndim != 2 or points.shape[1] != 3:
-        raise ValueError(f"`points` must have shape (N, 3). Got {points.shape}.")
+    # corresponding face index for each edge
+    face_ids = np.tile(np.arange(n_faces), 3)
 
-    hull = ConvexHull(points)
+    # undirected edges
+    edges = np.sort(edges, axis=1)
 
-    hull_points = points[hull.vertices]
-    hull_centroid = hull_points.mean(axis=0)
+    # compress edges to integer edge ids
+    unique_edges, edge_ids = np.unique(
+        edges,
+        axis=0,
+        return_inverse=True,
+    )
 
-    radial_dirs = points - hull_centroid[None, :]
-    radial_norms = np.linalg.norm(radial_dirs, axis=1, keepdims=True)
+    n_edges = len(unique_edges)
 
-    normal_norms = np.linalg.norm(normals, axis=1, keepdims=True)
+    # edge-face incidence matrix B[e, f] = 1
+    data = np.ones(len(edge_ids), dtype=np.uint8)
 
-    valid = (radial_norms[:, 0] > eps) & (normal_norms[:, 0] > eps)
+    B = sparse.coo_matrix(
+        (data, (edge_ids, face_ids)),
+        shape=(n_edges, n_faces),
+    ).tocsr()
 
-    radial_dirs_unit = np.zeros_like(radial_dirs)
-    normals_unit = np.zeros_like(normals)
+    # face adjacency: faces adjacent if they share an edge
+    A = B.T @ B
 
-    radial_dirs_unit[valid] = radial_dirs[valid] / radial_norms[valid]
-    normals_unit[valid] = normals[valid] / normal_norms[valid]
+    # remove self-adjacency
+    A.setdiag(0)
+    A.eliminate_zeros()
 
-    dots = np.sum(radial_dirs_unit * normals_unit, axis=1)
+    # binarize
+    A.data[:] = 1
+    A = A.tocsr()
 
-    misaligned_ratio = np.mean(dots[valid] < 0.0)
+    if return_edges:
+        return A, unique_edges, B
 
-    if return_dots:
-        return misaligned_ratio, dots
+    return A
 
-    return misaligned_ratio
-
-# simple geometric utilities for meshes
 def compute_face_signed_volumes(vertices: NDArray, faces: NDArray) -> NDArray:
     """
     Compute the contribution of each face to the signed volume enclosed by a mesh defined by vertices and faces.
@@ -180,7 +174,6 @@ def compute_vertex_normals(vertices: NDArray, faces: NDArray, face_normals: Opti
     np.add.at(vertex_normals, faces[:, 2], face_normals)
 
     return vertex_normals/np.linalg.norm(vertex_normals, axis=1, keepdims=True) if normalize else vertex_normals
-
 def compute_edge_cotans(edge_0 : NDArray, edge_1 : NDArray) -> NDArray:
     """
     Compute the cotangent of the angle between two edges.
@@ -201,9 +194,6 @@ def compute_edge_cotans(edge_0 : NDArray, edge_1 : NDArray) -> NDArray:
     dot = np.einsum("ij,ij->i", edge_0, edge_1)
     cross_norm = np.linalg.norm(np.cross(edge_0, edge_1), axis=1)
     return dot / cross_norm
-# generic utilities for meshes
-def get_edgelist(faces : NDArray) -> NDArray:
-    return np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]], axis=0)
 
 def compute_cotangent_weights(
     vertices: NDArray,
@@ -263,7 +253,6 @@ def compute_cotangent_matrix(vertices: NDArray, faces: NDArray, with_diagonal : 
     if return_cotangent_weights:
         return cotan_matrix, (cotan_0, cotan_1, cotan_2)
     return cotan_matrix
-
 def compute_voronoi_mass(
     vertices: NDArray,
     faces: NDArray,
@@ -334,3 +323,264 @@ def compute_voronoi_mass(
     np.add.at(mass, i2, m2)
 
     return mass
+
+def _plane_slice_edge_crosses(si, sj, epsilon=0):
+    # treat zero as positive (consistent tiebreak)
+    si = np.where(np.abs(si) <= epsilon, epsilon, si)
+    sj = np.where(np.abs(sj) <= epsilon, epsilon, sj)
+    return (si > 0) != (sj > 0)
+def plane_slice(vertices : NDArray, faces : NDArray, plane_origin : NDArray, plane_normal : NDArray, epsilon=0, return_edge_indices=False) -> Tuple[NDArray, NDArray, Optional[NDArray]]:
+    '''
+        Slice a triangular mesh with a plane defined by `plane_origin` and `plane_normal`.
+
+        Parameters
+        ----------
+        vertices : array, shape (N, 3)
+            Vertex coordinates of the mesh.
+
+        faces : array, shape (M, 3)
+            Indices of vertices forming triangular faces.
+
+        plane_origin : array, shape (3,)
+            A point on the slicing plane.
+
+        plane_normal : array, shape (3,)
+            Normal vector of the slicing plane.
+
+        epsilon : float
+            Numerical stability threshold for determining if a vertex is on the plane.
+
+
+        Returns        -------
+        segments : array, shape (K, 2, 3)
+            Line segments representing the intersection of the mesh with the plane.
+
+        triangle_indices : array, shape (K,)
+            Indices of the triangles that were sliced to produce each segment.
+
+        edge_indices : array, shape (K, 2) (optional)
+            Indices of the edges of the original triangles that correspond to each segment.
+    '''
+    signed_distances = (vertices - plane_origin) @ plane_normal
+    i0, i1, i2 = faces[:, 0], faces[:, 1], faces[:, 2]
+    s0, s1, s2 = signed_distances[i0], signed_distances[i1], signed_distances[i2]
+
+    c01_crosses = _plane_slice_edge_crosses(s0, s1, epsilon)
+    c12_crosses = _plane_slice_edge_crosses(s1, s2, epsilon)
+    c20_crosses = _plane_slice_edge_crosses(s2, s0, epsilon)
+    den01 = (s0-s1)
+    den12 = (s1-s2)
+    den20 = (s2-s0)
+
+    t01 = np.full( s0.shape, np.nan)
+    t12 = np.full( s0.shape, np.nan)
+    t20 = np.full( s0.shape, np.nan)
+
+    t01[c01_crosses] = s0[c01_crosses] / den01[c01_crosses]
+    t12[c12_crosses] = s1[c12_crosses] / den12[c12_crosses]
+    t20[c20_crosses] = s2[c20_crosses] / den20[c20_crosses]
+
+    v0, v1, v2 = vertices[i0], vertices[i1], vertices[i2]
+    p01 = v0 + (v1 - v0) * t01[:, None]
+    p12 = v1 + (v2 - v1) * t12[:, None]
+    p20 = v2 + (v0 - v2) * t20[:, None]
+    P = np.stack([p01,p12,p20], axis=1)
+    M = np.stack([c01_crosses, c12_crosses, c20_crosses], axis=1)
+    good_triangles = np.sum(M, axis=1) == 2
+    P_good = P[good_triangles]
+    M_good = M[good_triangles]
+    segments = P_good[M_good].reshape(-1,2,3)
+    if return_edge_indices:
+        E = np.stack([faces[:,[0,1]], faces[:,[1,2]], faces[:,[2,0]]], axis=1)
+        E_good = E[good_triangles]
+        return segments, np.argwhere(good_triangles).flatten(), E_good[M_good].reshape(-1,2)
+    else:
+        return segments, np.argwhere(good_triangles).flatten()
+def plane_slice_single_normal(vertices : NDArray, triangles : NDArray, plane_origins : NDArray, plane_normal : NDArray, epsilon=0, return_edge_indices=False, return_as_dict=False):
+    v_dot_n = vertices @ plane_normal                     # (num_vertices,)
+    o_dot_n = plane_origins @ plane_normal               # (num_planes,)
+
+    # (num_planes, num_vertices)
+    signed_distances = v_dot_n[None, :] - o_dot_n[:, None]
+
+    i0, i1, i2 = triangles[:, 0], triangles[:, 1], triangles[:, 2]
+
+    # (num_planes, num_triangles)
+    s0 = signed_distances[:, i0]
+    s1 = signed_distances[:, i1]
+    s2 = signed_distances[:, i2]
+
+    c01_crosses = _plane_slice_edge_crosses(s0, s1, epsilon)
+    c12_crosses = _plane_slice_edge_crosses(s1, s2, epsilon)
+    c20_crosses = _plane_slice_edge_crosses(s2, s0, epsilon)
+
+    den01 = s0 - s1
+    den12 = s1 - s2
+    den20 = s2 - s0
+
+    t01 = np.full(s0.shape, np.nan, dtype=vertices.dtype)
+    t12 = np.full(s0.shape, np.nan, dtype=vertices.dtype)
+    t20 = np.full(s0.shape, np.nan, dtype=vertices.dtype)
+
+    t01[c01_crosses] = s0[c01_crosses] / den01[c01_crosses]
+    t12[c12_crosses] = s1[c12_crosses] / den12[c12_crosses]
+    t20[c20_crosses] = s2[c20_crosses] / den20[c20_crosses]
+
+    v0, v1, v2 = vertices[i0], vertices[i1], vertices[i2]   # (num_triangles, 3)
+
+    # (num_planes, num_triangles, 3)
+    p01 = v0[None, :, :] + (v1 - v0)[None, :, :] * t01[:, :, None]
+    p12 = v1[None, :, :] + (v2 - v1)[None, :, :] * t12[:, :, None]
+    p20 = v2[None, :, :] + (v0 - v2)[None, :, :] * t20[:, :, None]
+
+    # candidate points and masks
+    # P: (num_planes, num_triangles, 3_edges, 3_xyz)
+    # M: (num_planes, num_triangles, 3_edges)
+    P = np.stack([p01, p12, p20], axis=2)
+    M = np.stack([c01_crosses, c12_crosses, c20_crosses], axis=2)
+    # triangles cut in exactly two edges
+    good = np.sum(M, axis=2) == 2                        # (num_planes, num_triangles)
+    # indices of (plane, triangle) that produce one segment
+    plane_ids, tri_ids = np.nonzero(good)
+    # select only good plane-triangle pairs
+    P_good = P[good]                                     # (num_good, 3_edges, 3_xyz)
+    M_good = M[good]                                     # (num_good, 3_edges)
+    # pick the 2 valid points / edges for each good pair
+    segments = P_good[M_good].reshape(-1, 2, 3)          # (num_good, 2, 3)
+
+    if return_edge_indices:
+        # edge vertex ids: (num_triangles, 3_edges, 2)
+        E = np.stack(
+            [triangles[:, [0, 1]], triangles[:, [1, 2]], triangles[:, [2, 0]]],
+            axis=1
+        )
+        E_good = E[tri_ids]                                  # (num_good, 3_edges, 2)
+        crossed_edges = E_good[M_good].reshape(-1, 2, 2)     # (num_good, 2, 2)
+
+    else:
+        crossed_edges = None
+
+    if return_as_dict:
+        results = {}
+        for plane_id in range(plane_origins.shape[0]):
+            plane_mask = plane_ids == plane_id
+            results[plane_id] = {
+                'segments': segments[plane_mask],
+                'triangle_indices': tri_ids[plane_mask]
+            }
+            if crossed_edges is not None:
+                results[plane_id]['crossed_edges'] = crossed_edges[plane_mask]
+    else:
+        if crossed_edges is not None:
+            results = (segments, plane_ids, tri_ids, crossed_edges)
+        else:
+            results = (segments, plane_ids, tri_ids)
+
+    return results
+def get_segment_path_from_faces_path(faces_adj_graph : nx.Graph, tri_indices : NDArray, tri_to_seg_index : Dict[int, int]):
+    sub = faces_adj_graph.subgraph(tri_indices)
+    deg = dict(sub.degree())
+    tris = list(tri_indices)
+
+    # start from a degree-1 node (endpoint) if it exists, else any node
+    start = next((t for t in tris if deg[t] == 1), tris[0])
+
+    # greedy walk: always go to the unvisited neighbor
+    path = [start]
+    visited = {start}
+    current = start
+    while True:
+        neighbors = [nb for nb in sub.neighbors(current) if nb not in visited]
+        if not neighbors:
+            break
+        current = neighbors[0]  # only one unvisited neighbor if it's a path graph
+        visited.add(current)
+        path.append(current)
+
+    seg_indices = np.array([tri_to_seg_index[t] for t in path])
+    return path, seg_indices
+def plane_slice_paths(vertices, faces, plane_origin, plane_normal, faces_adj_graph : nx.Graph = None, epsilon=0):
+    segments, tri_indices = plane_slice(vertices, faces, plane_origin, plane_normal, epsilon)
+    if faces_adj_graph is None:
+        faces_adj_graph = nx.from_scipy_sparse_matrix(get_faces_adjacency_scipy(faces))
+
+    seg_index_of = {tri: i for i, tri in enumerate(tri_indices)}
+    segments_tri_subgraph = faces_adj_graph.subgraph(tri_indices).copy()
+    non_adjacent_segments_groups = list(nx.connected_components(segments_tri_subgraph))
+    paths = []
+    for group in non_adjacent_segments_groups:
+        tri_path, seg_indices = get_segment_path_from_faces_path(faces_adj_graph, group, seg_index_of)
+        if tri_path is None:
+            continue
+        ordered_points = (segments[seg_indices, 0] + segments[seg_indices, 1]) / 2
+        paths.append(ordered_points)
+    return paths
+
+def nn_interpolation(vertices: NDArray, values: NDArray, query_points: NDArray) -> NDArray:
+    interpolator = NearestNDInterpolator(vertices, values)
+    return interpolator(query_points)
+def normals_misalignment_chull(points: NDArray, normals: NDArray, eps: float = 1e-12, return_dots: bool = False):
+    """
+    Compute the ratio of points whose normals are misaligned with the
+    direction from the convex-hull centroid to the point.
+
+    Parameters
+    ----------
+    points : array, shape (N, 3)
+        Point coordinates.
+
+    normals : array, shape (N, 3)
+        Normal vectors associated with each point.
+
+    eps : float
+        Numerical stability threshold.
+
+    return_dots : bool
+        If True, also return the dot products.
+
+    Returns
+    -------
+    misaligned_ratio : float
+        Fraction of points with inward-pointing normals.
+
+    dots : array, optional, shape (N,)
+        Dot products between outward radial directions and normals.
+    """
+    points = np.asarray(points, dtype=float)
+    normals = np.asarray(normals, dtype=float)
+
+    if points.shape != normals.shape:
+        raise ValueError(
+            f"`points` and `normals` must have the same shape. "
+            f"Got {points.shape} and {normals.shape}."
+        )
+
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError(f"`points` must have shape (N, 3). Got {points.shape}.")
+
+    hull = ConvexHull(points)
+
+    hull_points = points[hull.vertices]
+    hull_centroid = hull_points.mean(axis=0)
+
+    radial_dirs = points - hull_centroid[None, :]
+    radial_norms = np.linalg.norm(radial_dirs, axis=1, keepdims=True)
+
+    normal_norms = np.linalg.norm(normals, axis=1, keepdims=True)
+
+    valid = (radial_norms[:, 0] > eps) & (normal_norms[:, 0] > eps)
+
+    radial_dirs_unit = np.zeros_like(radial_dirs)
+    normals_unit = np.zeros_like(normals)
+
+    radial_dirs_unit[valid] = radial_dirs[valid] / radial_norms[valid]
+    normals_unit[valid] = normals[valid] / normal_norms[valid]
+
+    dots = np.sum(radial_dirs_unit * normals_unit, axis=1)
+
+    misaligned_ratio = np.mean(dots[valid] < 0.0)
+
+    if return_dots:
+        return misaligned_ratio, dots
+
+    return misaligned_ratio
