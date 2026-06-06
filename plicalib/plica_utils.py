@@ -8,6 +8,31 @@ from scipy.interpolate import NearestNDInterpolator
 
 def get_edgelist(faces : NDArray) -> NDArray:
     return np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]], axis=0)
+def get_dcel_incidence(
+    faces: NDArray,
+) -> tuple[sparse.csr_matrix, NDArray]:
+    faces = np.asarray(faces, dtype=np.int64)
+
+    edgelist = get_edgelist(faces)
+    face_indices = np.tile(np.arange(faces.shape[0]), 3)
+
+    sorted_edges = np.sort(edgelist, axis=1)
+
+    signs = np.where(edgelist[:, 0] == sorted_edges[:, 0], 1, -1)
+
+    unique_edges, edge_indices = np.unique(
+        sorted_edges,
+        axis=0,
+        return_inverse=True,
+    )
+
+    B = sparse.coo_matrix(
+        (signs, (edge_indices, face_indices)),
+        shape=(len(unique_edges), len(faces)), dtype=np.int64).tocsr()
+
+    return B, unique_edges
+    
+
 def get_faces_adjacency_scipy(faces, return_edges=False):
     """
     Vectorized sparse face adjacency.
@@ -68,6 +93,27 @@ def get_faces_adjacency_scipy(faces, return_edges=False):
         return A, unique_edges, B
 
     return A
+def get_vertices_adjacency_scipy(faces):
+    edgelist = get_edgelist(faces)
+    n_vertices = edgelist.max() + 1
+    data = np.ones(len(edgelist), dtype=np.uint8)
+    A = sparse.coo_matrix(
+        (data, (edgelist[:, 0], edgelist[:, 1])),
+        shape=(n_vertices, n_vertices),
+    ).tocsr()
+    A.setdiag(0)
+    A.eliminate_zeros()
+    return A
+def get_boundary_vertices(faces: NDArray) -> NDArray:
+    edgelist = get_edgelist(faces)
+    sorted_edges = np.sort(edgelist, axis=1)
+    unique_edges, counts = np.unique(sorted_edges, axis=0, return_counts=True)
+    boundary_edges = unique_edges[counts == 1]
+    return np.unique(boundary_edges.flatten())
+def get_vertices_connected_components(vertices_adjacency: sparse.csr_matrix, vertex_indices: NDArray) -> NDArray:
+    subgraph = vertices_adjacency[vertex_indices][:, vertex_indices]
+    n_components, labels = connected_components(subgraph, directed=False, return_labels=True)
+    return labels
 
 def compute_face_signed_volumes(vertices: NDArray, faces: NDArray) -> NDArray:
     """
@@ -195,7 +241,7 @@ def compute_edge_cotans(edge_0 : NDArray, edge_1 : NDArray) -> NDArray:
     cross_norm = np.linalg.norm(np.cross(edge_0, edge_1), axis=1)
     return dot / cross_norm
 
-def compute_cotangent_weights(
+def compute_cotan_weights(
     vertices: NDArray,
     faces: NDArray,
     return_as_tuple: bool = False,
@@ -225,12 +271,15 @@ def compute_cotangent_weights(
     if return_edge_lengths:
         return np.stack([cotan_0, cotan_1, cotan_2], axis=-1), np.stack([np.linalg.norm(e_01, axis=1), np.linalg.norm(e_12, axis=1), np.linalg.norm(e_20, axis=1)], axis=-1)
     return np.stack([cotan_0, cotan_1, cotan_2], axis=-1)
-def compute_cotangent_matrix(vertices: NDArray, faces: NDArray, with_diagonal : bool = True, return_cotangent_weights: bool = False) -> sparse.csr_matrix:
-    cotan_0, cotan_1, cotan_2 = compute_cotangent_weights(
-        vertices,
-        faces,
-        return_as_tuple=True,
-    )
+def compute_cotan_matrix(vertices: NDArray, faces: NDArray, precomputed_cotan_weights: Optional[Tuple[NDArray, NDArray, NDArray]] = None, with_diagonal : bool = True, return_cotan_weights: bool = False) -> sparse.csr_matrix:
+    if precomputed_cotan_weights is None:
+        cotan_0, cotan_1, cotan_2 = compute_cotan_weights(
+            vertices,
+            faces,
+            return_as_tuple=True,
+        )
+    else:
+        cotan_0, cotan_1, cotan_2 = precomputed_cotan_weights
 
     i0 = faces[:, 0]
     i1 = faces[:, 1]
@@ -250,7 +299,7 @@ def compute_cotangent_matrix(vertices: NDArray, faces: NDArray, with_diagonal : 
     cotan_matrix = 0.5*sparse.coo_matrix((v, (i, j)), shape=(n, n)).tocsr()
     if with_diagonal:
         cotan_matrix.setdiag(-cotan_matrix.sum(axis=1).A1)
-    if return_cotangent_weights:
+    if return_cotan_weights:
         return cotan_matrix, (cotan_0, cotan_1, cotan_2)
     return cotan_matrix
 def compute_voronoi_mass(
@@ -268,7 +317,7 @@ def compute_voronoi_mass(
     """
 
     if cotans is None:
-        cotan_0, cotan_1, cotan_2 = compute_cotangent_weights(
+        cotan_0, cotan_1, cotan_2 = compute_cotan_weights(
             vertices,
             faces,
             return_as_tuple=True,
@@ -323,6 +372,17 @@ def compute_voronoi_mass(
     np.add.at(mass, i2, m2)
 
     return mass
+def get_vertex_mean_curvature(vertices, faces, vertex_normals=None, cotan_matrix=None, mass_matrix=None):
+    if vertex_normals is None:
+        vertex_normals = compute_vertex_normals(vertices, faces, normalize=True)
+    if cotan_matrix is None and mass_matrix is None:
+        cotan_matrix, cotan_weights = compute_cotan_matrix(vertices, faces, with_diagonal=True, return_cotan_weights=True)
+        mass_matrix = compute_voronoi_mass(vertices, faces, cotans=cotan_weights)
+    elif cotan_matrix is None:
+        cotan_matrix = compute_cotan_matrix(vertices, faces, with_diagonal=True, return_cotan_weights=False)
+    elif mass_matrix is None:
+        mass_matrix = compute_voronoi_mass(vertices, faces)
+    return 0.5 * (vertex_normals * (cotan_matrix @ vertices)).sum(axis=1) / mass_matrix
 
 def _plane_slice_edge_crosses(si, sj, epsilon=0):
     """
