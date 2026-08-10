@@ -7,90 +7,167 @@ from scipy.sparse.csgraph import connected_components
 from scipy.interpolate import NearestNDInterpolator
 
 def get_edgelist(faces : NDArray) -> NDArray:
-    return np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]], axis=0)
-def get_dcel_incidence(
-    faces: NDArray,
-) -> tuple[sparse.csr_matrix, NDArray]:
-    faces = np.asarray(faces, dtype=np.int64)
-
+    return np.stack([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]], axis=1).reshape(-1, 2)
+def get_edges_faces_incidence(
+    faces: NDArray) -> tuple[sparse.csr_matrix, NDArray]:
     edgelist = get_edgelist(faces)
-    face_indices = np.tile(np.arange(faces.shape[0]), 3)
+    face_indices = np.repeat(np.arange(faces.shape[0]), 3)
 
     sorted_edges = np.sort(edgelist, axis=1)
 
     signs = np.where(edgelist[:, 0] == sorted_edges[:, 0], 1, -1)
 
-    unique_edges, edge_indices = np.unique(
+    unique_edges, unique_edge_indices = np.unique(
         sorted_edges,
         axis=0,
         return_inverse=True,
     )
 
     B = sparse.coo_matrix(
-        (signs, (edge_indices, face_indices)),
+        (signs, (unique_edge_indices, face_indices)),
         shape=(len(unique_edges), len(faces)), dtype=np.int64).tocsr()
 
     return B, unique_edges
-    
-
-def get_faces_adjacency_scipy(faces, return_edges=False):
+def get_dcel(faces: NDArray) -> dict:
     """
-    Vectorized sparse face adjacency.
+    Minimal vectorized DCEL / halfedge table for triangular faces.
+
+    Assumes get_edgelist(faces) is face-blocked:
+
+        face 0: (v0,v1), (v1,v2), (v2,v0)
+        face 1: (v0,v1), (v1,v2), (v2,v0)
+        ...
 
     Returns
     -------
-    A : scipy.sparse.csr_matrix, shape (n_faces, n_faces)
-        A[f, g] = 1 if faces f and g share an edge.
+    dcel : dict
+        halfedges : (H, 2)
+            Oriented halfedge vertex pairs.
 
-    Optionally returns
-    -------
-    unique_edges : ndarray, shape (n_edges, 2)
-        The unique undirected mesh edges.
-    B : scipy.sparse.csr_matrix, shape (n_edges, n_faces)
-        Edge-face incidence matrix.
+        faces : (H,)
+            Face id of each halfedge.
+
+        local_edges : (H,)
+            Local edge id inside the triangle: 0, 1, 2.
+
+        nexts : (H,)
+            Next halfedge around the same face.
+
+        prevs : (H,)
+            Previous halfedge around the same face.
+
+        twins : (H,)
+            Opposite halfedge across the same undirected edge.
+            Boundary / non-manifold halfedges have twin = -1.
+
+        edge_ids : (H,)
+            Unique undirected edge id of each halfedge.
+
+        edges : (E, 2)
+            Unique undirected edges as sorted vertex pairs.
+
+        edge_counts : (E,)
+            Number of halfedges incident to each unique edge.
+            1 = boundary, 2 = manifold interior, >2 = non-manifold.
     """
     faces = np.asarray(faces, dtype=np.int64)
     n_faces = faces.shape[0]
 
-    # all triangle edges
-    edges = get_edgelist(faces)
+    halfedges = get_edgelist(faces)
+    n_halfedges = halfedges.shape[0]
 
-    # corresponding face index for each edge
-    face_ids = np.tile(np.arange(n_faces), 3)
+    faces_of_halfedges = np.repeat(np.arange(n_faces), 3)
+    local_edges = np.tile(np.arange(3), n_faces)
 
-    # undirected edges
-    edges = np.sort(edges, axis=1)
+    base = 3 * faces_of_halfedges
 
-    # compress edges to integer edge ids
-    unique_edges, edge_ids = np.unique(
-        edges,
+    nexts = base + (local_edges + 1) % 3
+    prevs = base + (local_edges - 1) % 3
+
+    sorted_edges = np.sort(halfedges, axis=1)
+
+    edges, edge_ids = np.unique(
+        sorted_edges,
         axis=0,
         return_inverse=True,
     )
 
-    n_edges = len(unique_edges)
+    edge_counts = np.bincount(
+        edge_ids,
+        minlength=len(edges),
+    )
 
-    # edge-face incidence matrix B[e, f] = 1
-    data = np.ones(len(edge_ids), dtype=np.uint8)
+    twins = np.full(n_halfedges, -1, dtype=np.int64)
 
-    B = sparse.coo_matrix(
-        (data, (edge_ids, face_ids)),
-        shape=(n_edges, n_faces),
-    ).tocsr()
+    order = np.argsort(edge_ids)
 
-    # face adjacency: faces adjacent if they share an edge
-    A = B.T @ B
+    starts = np.empty(len(edges), dtype=np.int64)
+    starts[0] = 0
+    starts[1:] = np.cumsum(edge_counts[:-1])
 
-    # remove self-adjacency
+    pair_edges = np.flatnonzero(edge_counts == 2)
+
+    h0 = order[starts[pair_edges]]
+    h1 = order[starts[pair_edges] + 1]
+
+    twins[h0] = h1
+    twins[h1] = h0
+
+    # Orientation of each halfedge relative to canonical sorted edge.
+    # +1 means same direction as edges[edge_ids[h]]
+    # -1 means opposite direction.
+    signs = np.where(
+        halfedges[:, 0] == sorted_edges[:, 0],
+        1,
+        -1,
+    )
+
+    return {
+        "halfedges": halfedges,
+        "faces": faces_of_halfedges,
+        "local_edges": local_edges,
+        "nexts": nexts,
+        "prevs": prevs,
+        "twins": twins,
+        "edge_ids": edge_ids,
+        "edges": edges,
+        "edge_counts": edge_counts,
+        "signs": signs,
+    }
+
+def get_faces_adjacency_scipy(
+    faces: NDArray,
+    return_incidence: bool = False,
+):
+    """
+    Sparse face adjacency from edge-face incidence.
+
+    Returns
+    -------
+    A : scipy.sparse.csr_matrix, shape (n_faces, n_faces)
+        A[f, g] = 1 if faces f and g share at least one edge.
+
+    Optionally returns
+    -------
+    B : scipy.sparse.csr_matrix, shape (n_edges, n_faces)
+        Signed edge-face incidence matrix.
+
+    edges : ndarray, shape (n_edges, 2)
+        Unique undirected edges as sorted vertex pairs.
+    """
+    B, edges = get_edges_faces_incidence(faces)
+
+    B_abs = abs(B)
+
+    A = B_abs.T @ B_abs
     A.setdiag(0)
     A.eliminate_zeros()
 
-    # binarize
     A.data[:] = 1
-    A = A.tocsr()
+    A = A.astype(np.uint8).tocsr()
 
-    if return_edges:
-        return A, unique_edges, B
+    if return_incidence:
+        return A, B, edges
 
     return A
 def get_vertices_adjacency_scipy(faces):
@@ -104,12 +181,14 @@ def get_vertices_adjacency_scipy(faces):
     A.setdiag(0)
     A.eliminate_zeros()
     return A
-def get_boundary_vertices(faces: NDArray) -> NDArray:
-    edgelist = get_edgelist(faces)
+
+def get_boundary_vertex_indices_from_edgelist(edgelist: NDArray) -> NDArray:
     sorted_edges = np.sort(edgelist, axis=1)
     unique_edges, counts = np.unique(sorted_edges, axis=0, return_counts=True)
     boundary_edges = unique_edges[counts == 1]
     return np.unique(boundary_edges.flatten())
+def get_boundary_vertex_indices(faces: NDArray) -> NDArray:
+    return get_boundary_vertex_indices_from_edgelist(get_edgelist(faces))
 def get_vertices_connected_components(vertices_adjacency: sparse.csr_matrix, vertex_indices: NDArray) -> NDArray:
     subgraph = vertices_adjacency[vertex_indices][:, vertex_indices]
     n_components, labels = connected_components(subgraph, directed=False, return_labels=True)
@@ -188,7 +267,7 @@ def compute_face_normals(vertices: NDArray, faces: NDArray, normalize: bool = Tr
     if return_norm:
         return normals, norms
     return normals
-def compute_vertex_normals(vertices: NDArray, faces: NDArray, face_normals: Optional[NDArray] = None, normalize: bool = False, area_weighted: bool = False) -> NDArray:
+def compute_vertex_normals(vertices: NDArray, faces: NDArray, face_normals: Optional[NDArray] = None, normalize: bool = True, area_weighted: bool = True) -> NDArray:
     """
     Compute the normal vector for each vertex in a mesh defined by vertices and faces.
 
@@ -383,6 +462,46 @@ def get_vertex_mean_curvature(vertices, faces, vertex_normals=None, cotan_matrix
     elif mass_matrix is None:
         mass_matrix = compute_voronoi_mass(vertices, faces)
     return 0.5 * (vertex_normals * (cotan_matrix @ vertices)).sum(axis=1) / mass_matrix
+def harmonic(
+    vertices: NDArray,
+    faces: NDArray,
+    boundary_indices: NDArray,
+    boundary_values: NDArray,
+    cotan_matrix: Optional[sparse.spmatrix] = None,
+) -> NDArray:
+    if cotan_matrix is None:
+        cotan_matrix = compute_cotan_matrix(
+            vertices,
+            faces,
+            with_diagonal=True,
+            return_cotan_weights=False,
+        )
+
+    n_vertices = vertices.shape[0]
+
+    boundary_indices = np.asarray(boundary_indices, dtype=np.int64)
+    boundary_values = np.asarray(boundary_values)
+
+    boundary_mask = np.zeros(n_vertices, dtype=bool)
+    boundary_mask[boundary_indices] = True
+
+    interior_indices = np.flatnonzero(~boundary_mask)
+
+    A = cotan_matrix[interior_indices][:, interior_indices]
+    b = -cotan_matrix[interior_indices][:, boundary_indices] @ boundary_values
+
+    u_interior = sparse.linalg.spsolve(A, b)
+
+    out_shape = (n_vertices,) + boundary_values.shape[1:]
+    u = np.zeros(
+        out_shape,
+        dtype=np.result_type(vertices.dtype, boundary_values.dtype, float),
+    )
+
+    u[boundary_indices] = boundary_values
+    u[interior_indices] = u_interior
+
+    return u
 
 def _plane_slice_edge_crosses(si, sj, epsilon=0):
     """
@@ -649,10 +768,8 @@ def _segments_to_polylines_from_crossed_edges(
 ):
     """
     Convert unordered mesh-plane intersection segments into ordered polylines.
-
     Nodes of the graph are crossed original mesh edges, represented by
     their sorted vertex pairs. Edges of the graph are slice segments.
-    This orders actual segment endpoints, not segment midpoints.
     """
     segments = np.asarray(segments)
     crossed_edge_vertices = np.asarray(crossed_edge_vertices, dtype=np.int64)
@@ -776,10 +893,6 @@ def plane_slice_paths(
 ):
     """
     Slice mesh and return ordered intersection polylines.
-
-    Unlike the previous version, this returns actual ordered intersection
-    endpoints, not segment midpoints.
-
     """
     segments, tri_indices, crossed_edge_vertices = plane_slice(
         vertices,
@@ -868,6 +981,7 @@ def normals_misalignment_chull(points: NDArray, normals: NDArray, eps: float = 1
         return misaligned_ratio, dots
 
     return misaligned_ratio
+
 
 class TriangularMesh:
     def __init__(self, vertices, triangles):
